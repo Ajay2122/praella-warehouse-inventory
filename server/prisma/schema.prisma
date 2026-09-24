@@ -1,0 +1,356 @@
+// Full domain model - see ARCHITECTURE.md section 2 for the narrative
+// explanation and the ER diagram this mirrors.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy, users, auth
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+
+  users           User[]
+  warehouses      Warehouse[]
+  categories      Category[]
+  suppliers       Supplier[]
+  products        Product[]
+  auditLogs       AuditLog[]
+  idempotencyKeys IdempotencyKey[]
+  purchaseOrders  PurchaseOrder[]
+  salesOrders     SalesOrder[]
+}
+
+enum Role {
+  ADMIN
+  MANAGER
+  STAFF
+}
+
+model User {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String   @unique
+  passwordHash   String
+  role           Role
+  createdAt      DateTime @default(now())
+
+  refreshTokens         RefreshToken[]
+  warehouseMemberships  WarehouseMember[]
+  createdWarehouses     Warehouse[]
+  stockMovements        StockMovement[]
+  auditLogs             AuditLog[]
+  createdPurchaseOrders PurchaseOrder[]
+  createdSalesOrders    SalesOrder[]
+
+  @@index([organizationId])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String    @unique
+  revokedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Warehouses and collaboration
+// ---------------------------------------------------------------------------
+
+model Warehouse {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  address        String?
+  createdById    String
+  createdBy      User     @relation(fields: [createdById], references: [id])
+  createdAt      DateTime @default(now())
+
+  members            WarehouseMember[]
+  stockLevels        StockLevel[]
+  replenishmentRules ReplenishmentRule[]
+  movementsFrom      StockMovement[]     @relation("MovementFromWarehouse")
+  movementsTo        StockMovement[]     @relation("MovementToWarehouse")
+  purchaseOrders     PurchaseOrder[]
+  salesOrders        SalesOrder[]
+
+  @@index([organizationId])
+}
+
+// Per-warehouse access + optional role override. Effective role for a
+// warehouse-scoped action = member.role ?? user.role.
+model WarehouseMember {
+  id          String    @id @default(cuid())
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role        Role?
+  createdAt   DateTime  @default(now())
+
+  @@unique([warehouseId, userId])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Catalog
+// ---------------------------------------------------------------------------
+
+model Category {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+
+  products Product[]
+
+  @@unique([organizationId, name])
+  @@index([organizationId])
+}
+
+model Supplier {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String
+  contactEmail   String?
+  phone          String?
+
+  products       Product[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([organizationId])
+}
+
+// Org-level catalog entry. Deliberately has no quantity field - see
+// StockLevel. sku is unique per org, not globally, so two tenants can both
+// use "SKU-001" without colliding.
+model Product {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  sku            String
+  name           String
+  categoryId     String
+  category       Category @relation(fields: [categoryId], references: [id])
+  supplierId     String
+  supplier       Supplier @relation(fields: [supplierId], references: [id])
+  unitPrice      Decimal  @db.Decimal(12, 2)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  stockLevels        StockLevel[]
+  replenishmentRules ReplenishmentRule[]
+  stockMovements     StockMovement[]
+  purchaseOrderLines PurchaseOrderLine[]
+  salesOrderLines    SalesOrderLine[]
+
+  @@unique([organizationId, sku])
+  @@index([organizationId])
+  @@index([categoryId])
+}
+
+// ---------------------------------------------------------------------------
+// Inventory: current levels + append-only movement ledger
+// ---------------------------------------------------------------------------
+
+// Cached "current quantity" per (product, warehouse). Always written inside
+// the same transaction as the StockMovement row that justifies the change -
+// see ARCHITECTURE.md section 10 (inventory transaction rule).
+model StockLevel {
+  id          String    @id @default(cuid())
+  productId   String
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouseId String
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  quantity    Int       @default(0)
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([productId, warehouseId])
+  @@index([warehouseId])
+}
+
+model ReplenishmentRule {
+  id           String    @id @default(cuid())
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouseId  String
+  warehouse    Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+  minThreshold Int
+
+  @@unique([productId, warehouseId])
+  @@index([warehouseId])
+}
+
+enum MovementType {
+  INBOUND
+  OUTBOUND
+  TRANSFER_OUT
+  TRANSFER_IN
+  ADJUSTMENT
+}
+
+enum ReferenceType {
+  PURCHASE_ORDER
+  SALES_ORDER
+  TRANSFER
+  MANUAL
+}
+
+// Append-only. Nothing in this app updates or deletes a StockMovement row -
+// corrections are made by inserting a new ADJUSTMENT row, never by mutating
+// history.
+model StockMovement {
+  id              String         @id @default(cuid())
+  productId       String
+  product         Product        @relation(fields: [productId], references: [id])
+  type            MovementType
+  quantity        Int
+  fromWarehouseId String?
+  fromWarehouse   Warehouse?     @relation("MovementFromWarehouse", fields: [fromWarehouseId], references: [id])
+  toWarehouseId   String?
+  toWarehouse     Warehouse?     @relation("MovementToWarehouse", fields: [toWarehouseId], references: [id])
+  actorUserId     String
+  actor           User           @relation(fields: [actorUserId], references: [id])
+  referenceType   ReferenceType?
+  referenceId     String?
+  createdAt       DateTime       @default(now())
+
+  @@index([productId])
+  @@index([fromWarehouseId])
+  @@index([toWarehouseId])
+  @@index([referenceType, referenceId])
+}
+
+// ---------------------------------------------------------------------------
+// Orders
+// ---------------------------------------------------------------------------
+
+enum PurchaseOrderStatus {
+  DRAFT
+  CONFIRMED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrder {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  warehouseId    String
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id])
+  supplierId     String
+  supplier       Supplier  @relation(fields: [supplierId], references: [id])
+  status         PurchaseOrderStatus @default(DRAFT)
+  createdById    String
+  createdBy      User      @relation(fields: [createdById], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines PurchaseOrderLine[]
+
+  @@index([organizationId])
+  @@index([warehouseId])
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(cuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id])
+  quantity        Int
+  unitCost        Decimal       @db.Decimal(12, 2)
+
+  @@index([purchaseOrderId])
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  DISPATCHED
+  CANCELLED
+}
+
+model SalesOrder {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  warehouseId    String
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id])
+  status         SalesOrderStatus @default(DRAFT)
+  createdById    String
+  createdBy      User      @relation(fields: [createdById], references: [id])
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  lines SalesOrderLine[]
+
+  @@index([organizationId])
+  @@index([warehouseId])
+}
+
+model SalesOrderLine {
+  id           String     @id @default(cuid())
+  salesOrderId String
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id])
+  quantity     Int
+  unitPrice    Decimal    @db.Decimal(12, 2)
+
+  @@index([salesOrderId])
+}
+
+// ---------------------------------------------------------------------------
+// Cross-cutting
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id])
+  action         String
+  entity         String
+  entityId       String
+  oldValue       Json?
+  newValue       Json?
+  createdAt      DateTime @default(now())
+
+  @@index([organizationId])
+  @@index([entity, entityId])
+}
+
+// One row per (org, client-supplied key). A repeat request with the same
+// key short-circuits to the stored response instead of re-running the
+// operation - see ARCHITECTURE.md section on idempotency.
+model IdempotencyKey {
+  id             String   @id @default(cuid())
+  key            String
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestHash    String
+  responseStatus Int
+  responseBody   Json
+  createdAt      DateTime @default(now())
+
+  @@unique([organizationId, key])
+}
