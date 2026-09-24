@@ -5,6 +5,7 @@ import { assertOrgScope } from '../../lib/orgScope';
 import { applyMovement } from '../../lib/inventory';
 import { effectiveWarehouseRole, resolveWarehouseAccess } from '../../lib/warehouseAccess';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
+import { invalidateInventoryCaches } from '../../lib/cache';
 import type { AuthenticatedUser } from '../../types/express';
 import type { CreatePurchaseOrderInput } from './purchaseOrder.schemas';
 
@@ -106,7 +107,7 @@ export async function receivePurchaseOrder(id: string, actor: AuthenticatedUser)
     throw new AppError('BUSINESS_RULE_VIOLATION', `Cannot receive a purchase order in status ${po.status}`);
   }
 
-  return prisma.$transaction(async (tx) => {
+  const updated = await prisma.$transaction(async (tx) => {
     for (const line of po.lines) {
       await applyMovement(tx, {
         productId: line.productId,
@@ -124,6 +125,8 @@ export async function receivePurchaseOrder(id: string, actor: AuthenticatedUser)
       include: { lines: true },
     });
   });
+  await invalidateInventoryCaches(actor.organizationId);
+  return updated;
 }
 
 export async function cancelPurchaseOrder(id: string, actor: AuthenticatedUser) {

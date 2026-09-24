@@ -4,6 +4,8 @@ import { requireRole } from '../../middleware/rbac';
 import { validate } from '../../middleware/validate';
 import { asyncHandler } from '../../lib/asyncHandler';
 import {
+  bulkUpdateSchema,
+  jobIdParamSchema,
   listMovementsQuerySchema,
   listStockLevelsQuerySchema,
   listTransfersQuerySchema,
@@ -23,6 +25,17 @@ stockRouter.post(
   '/movements',
   validate({ body: recordMovementSchema }),
   asyncHandler(ctrl.recordMovementHandler),
+);
+stockRouter.post(
+  '/bulk-update',
+  requireRole('ADMIN', 'MANAGER'),
+  validate({ body: bulkUpdateSchema }),
+  asyncHandler(ctrl.bulkUpdateHandler),
+);
+stockRouter.get(
+  '/bulk-update/:jobId',
+  validate({ params: jobIdParamSchema }),
+  asyncHandler(ctrl.bulkUpdateStatusHandler),
 );
 
 export const transferRouter = Router();

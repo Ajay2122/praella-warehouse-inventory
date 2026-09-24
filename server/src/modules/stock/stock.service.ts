@@ -6,6 +6,7 @@ import { assertOrgScope } from '../../lib/orgScope';
 import { applyMovement } from '../../lib/inventory';
 import { effectiveWarehouseRole, resolveWarehouseAccess } from '../../lib/warehouseAccess';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
+import { cacheGetOrSet, cacheKeys, hashQuery, invalidateInventoryCaches } from "../../lib/cache";
 import type { AuthenticatedUser } from '../../types/express';
 import type { RecordMovementInput, TransferInput, UpsertReplenishmentRuleInput } from './stock.schemas';
 
@@ -38,24 +39,37 @@ export async function listStockLevels(params: ListLevelsParams) {
     await resolveWarehouseAccess(params.warehouseId, params.user);
   }
 
-  const where: Prisma.StockLevelWhereInput = {
-    ...(params.warehouseId
-      ? { warehouseId: params.warehouseId }
-      : { warehouse: { organizationId: params.user.organizationId, ...warehouseScopeFilter(params.user) } }),
-    ...(params.productId ? { productId: params.productId } : {}),
-  };
-
-  const [data, total] = await Promise.all([
-    prisma.stockLevel.findMany({
-      where,
-      ...paginationArgs(params),
-      orderBy: { updatedAt: 'desc' },
-      include: { product: true, warehouse: true },
+  const cacheKey = cacheKeys.stockLevels(
+    params.user.organizationId,
+    hashQuery({
+      page: params.page,
+      pageSize: params.pageSize,
+      warehouseId: params.warehouseId,
+      productId: params.productId,
+      scope: params.warehouseId ?? `role:${params.user.role}:${params.user.id}`,
     }),
-    prisma.stockLevel.count({ where }),
-  ]);
+  );
 
-  return { data, pagination: paginationMeta(params, total) };
+  return cacheGetOrSet(cacheKey, async () => {
+    const where: Prisma.StockLevelWhereInput = {
+      ...(params.warehouseId
+        ? { warehouseId: params.warehouseId }
+        : { warehouse: { organizationId: params.user.organizationId, ...warehouseScopeFilter(params.user) } }),
+      ...(params.productId ? { productId: params.productId } : {}),
+    };
+
+    const [data, total] = await Promise.all([
+      prisma.stockLevel.findMany({
+        where,
+        ...paginationArgs(params),
+        orderBy: { updatedAt: 'desc' },
+        include: { product: true, warehouse: true },
+      }),
+      prisma.stockLevel.count({ where }),
+    ]);
+
+    return { data, pagination: paginationMeta(params, total) };
+  });
 }
 
 // --- Movements ----------------------------------------------------------
@@ -117,7 +131,7 @@ export async function recordMovement(input: RecordMovementInput, actor: Authenti
 
   const direction = input.type === 'INBOUND' ? 'IN' : input.type === 'OUTBOUND' ? 'OUT' : input.direction;
 
-  return prisma.$transaction((tx) =>
+  const movement = await prisma.$transaction((tx) =>
     applyMovement(tx, {
       productId: input.productId,
       type: input.type,
@@ -128,6 +142,8 @@ export async function recordMovement(input: RecordMovementInput, actor: Authenti
       referenceType: 'MANUAL',
     }),
   );
+  await invalidateInventoryCaches(actor.organizationId);
+  return movement;
 }
 
 // --- Transfers ------------------------------------------------------------
@@ -152,7 +168,7 @@ export async function transferStock(input: TransferInput, actor: AuthenticatedUs
   // TRANSFER_OUT decrement fails (insufficient stock), the TRANSFER_IN
   // never runs and the whole thing rolls back - no stock can vanish or
   // appear from a partially-applied transfer.
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     const out = await applyMovement(tx, {
       productId: input.productId,
       type: 'TRANSFER_OUT',
@@ -173,6 +189,8 @@ export async function transferStock(input: TransferInput, actor: AuthenticatedUs
     });
     return { referenceId, out, in: inbound };
   });
+  await invalidateInventoryCaches(actor.organizationId);
+  return result;
 }
 
 interface ListTransfersParams extends PaginationInput {
@@ -207,24 +225,24 @@ export async function upsertReplenishmentRule(input: UpsertReplenishmentRuleInpu
   await resolveWarehouseAccess(input.warehouseId, actor);
   await assertProductInOrg(input.productId, actor.organizationId);
 
-  return prisma.replenishmentRule.upsert({
+  const rule = await prisma.replenishmentRule.upsert({
     where: { productId_warehouseId: { productId: input.productId, warehouseId: input.warehouseId } },
     create: input,
     update: { minThreshold: input.minThreshold },
   });
+  await invalidateInventoryCaches(actor.organizationId);
+  return rule;
 }
 
-export async function listLowStockAlerts(actor: AuthenticatedUser, params: PaginationInput) {
-  // A product is "low stock" when its StockLevel.quantity is below the
-  // ReplenishmentRule.minThreshold defined for that same (product,
-  // warehouse) pair. Prisma can't express a cross-row field comparison in
-  // `where`, so this is fetched pre-filtered by org/warehouse scope and
-  // compared in application code - acceptable at this data scale, and it's
-  // also refreshed into a materialized form by the Phase 12 background
-  // scan for larger datasets.
+// A product is "low stock" when its StockLevel.quantity is below the
+// ReplenishmentRule.minThreshold defined for that same (product,
+// warehouse) pair. Prisma can't express a cross-row field comparison in
+// `where`, so this is fetched pre-filtered by org/warehouse scope and
+// compared in application code - fine at this data scale.
+export async function computeLowStockAlerts(actor: Pick<AuthenticatedUser, 'organizationId' | 'role' | 'id'>) {
   const rules = await prisma.replenishmentRule.findMany({
     where: {
-      warehouse: { organizationId: actor.organizationId, ...warehouseScopeFilter(actor) },
+      warehouse: { organizationId: actor.organizationId, ...warehouseScopeFilter(actor as AuthenticatedUser) },
     },
     include: { product: true, warehouse: true },
   });
@@ -236,7 +254,7 @@ export async function listLowStockAlerts(actor: AuthenticatedUser, params: Pagin
   });
   const levelByKey = new Map(levels.map((l) => [`${l.productId}:${l.warehouseId}`, l.quantity]));
 
-  const alerts = rules
+  return rules
     .map((rule) => ({
       product: rule.product,
       warehouse: rule.warehouse,
@@ -244,6 +262,25 @@ export async function listLowStockAlerts(actor: AuthenticatedUser, params: Pagin
       currentQuantity: levelByKey.get(`${rule.productId}:${rule.warehouseId}`) ?? 0,
     }))
     .filter((a) => a.currentQuantity < a.minThreshold);
+}
+
+export function replenishmentAlertsCacheKey(organizationId: string, scope: string): string {
+  return `replenishment:alerts:${organizationId}:${scope}`;
+}
+
+export async function listLowStockAlerts(actor: AuthenticatedUser, params: PaginationInput) {
+  // Admins see the org-wide alert set - exactly what the Phase 12
+  // replenishment.scan background job pre-warms every 15 minutes, so an
+  // Admin's request is usually a cache hit even before they've asked
+  // before. Non-admins get a narrower, membership-scoped view that the
+  // scan job doesn't pre-compute (it varies per user), cached on-demand
+  // with a short TTL instead.
+  const scope = actor.role === 'ADMIN' ? 'all' : `member:${actor.id}`;
+  const alerts = await cacheGetOrSet(
+    replenishmentAlertsCacheKey(actor.organizationId, scope),
+    () => computeLowStockAlerts(actor),
+    60,
+  );
 
   const total = alerts.length;
   const { skip, take } = paginationArgs(params);

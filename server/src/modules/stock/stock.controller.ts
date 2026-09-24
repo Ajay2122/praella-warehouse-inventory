@@ -1,4 +1,6 @@
 import type { Request, Response } from 'express';
+import { AppError } from '../../lib/errors';
+import { bulkStockUpdateQueue } from '../../jobs/queue';
 import * as stockService from './stock.service';
 
 export async function listLevelsHandler(req: Request, res: Response) {
@@ -49,6 +51,28 @@ export async function listTransfersHandler(req: Request, res: Response) {
   const { page, pageSize } = req.query as unknown as { page: number; pageSize: number };
   const result = await stockService.listTransfers({ page, pageSize, user: req.user! });
   res.json({ success: true, ...result });
+}
+
+// Enqueues and returns immediately with a jobId - RBAC is checked once
+// here at enqueue time (Admin/Manager only), not re-checked per item by
+// the worker, which trusts organizationId/actorUserId captured on the job.
+export async function bulkUpdateHandler(req: Request, res: Response) {
+  const job = await bulkStockUpdateQueue.add('bulk-update', {
+    organizationId: req.user!.organizationId,
+    actorUserId: req.user!.id,
+    items: req.body.items,
+  });
+  res.status(202).json({ success: true, data: { jobId: job.id } });
+}
+
+export async function bulkUpdateStatusHandler(req: Request, res: Response) {
+  const job = await bulkStockUpdateQueue.getJob(req.params.jobId as string);
+  if (!job) throw new AppError('NOT_FOUND', 'Job not found');
+  const state = await job.getState();
+  res.json({
+    success: true,
+    data: { id: job.id, state, progress: job.progress, result: job.returnvalue ?? null },
+  });
 }
 
 export async function upsertReplenishmentRuleHandler(req: Request, res: Response) {

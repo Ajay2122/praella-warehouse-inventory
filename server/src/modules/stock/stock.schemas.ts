@@ -45,6 +45,25 @@ export type TransferInput = z.infer<typeof transferSchema>;
 
 export const listTransfersQuerySchema = paginationQuerySchema;
 
+const bulkUpdateItemSchema = z
+  .object({
+    productId: z.string().min(1),
+    warehouseId: z.string().min(1),
+    type: z.enum(['INBOUND', 'OUTBOUND', 'ADJUSTMENT']),
+    direction: z.enum(['IN', 'OUT']).optional(),
+    quantity: z.coerce.number().int().positive(),
+  })
+  .refine((d) => d.type !== 'ADJUSTMENT' || !!d.direction, {
+    message: 'direction is required for ADJUSTMENT items',
+    path: ['direction'],
+  });
+
+export const bulkUpdateSchema = z.object({
+  items: z.array(bulkUpdateItemSchema).min(1).max(5000),
+});
+
+export const jobIdParamSchema = z.object({ jobId: z.string().min(1) });
+
 export const upsertReplenishmentRuleSchema = z.object({
   productId: z.string().min(1),
   warehouseId: z.string().min(1),

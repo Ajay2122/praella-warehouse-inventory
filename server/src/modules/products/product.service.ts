@@ -3,6 +3,7 @@ import { prisma } from '../../lib/prisma';
 import { AppError } from '../../lib/errors';
 import { assertOrgScope } from '../../lib/orgScope';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
+import { cacheGetOrSet, cacheInvalidate, cacheKeys, hashQuery } from '../../lib/cache';
 import type { CreateProductInput, UpdateProductInput } from './product.schemas';
 
 interface ListParams extends PaginationInput {
@@ -15,35 +16,42 @@ interface ListParams extends PaginationInput {
 export async function listProducts(params: ListParams) {
   const { organizationId, page, pageSize, search, categoryId, warehouseId } = params;
 
-  const where: Prisma.ProductWhereInput = {
+  const cacheKey = cacheKeys.productList(
     organizationId,
-    ...(categoryId ? { categoryId } : {}),
-    ...(warehouseId ? { stockLevels: { some: { warehouseId } } } : {}),
-    ...(search
-      ? {
-          OR: [
-            { name: { contains: search, mode: 'insensitive' } },
-            { sku: { contains: search, mode: 'insensitive' } },
-          ],
-        }
-      : {}),
-  };
+    hashQuery({ page, pageSize, search, categoryId, warehouseId }),
+  );
 
-  const [data, total] = await Promise.all([
-    prisma.product.findMany({
-      where,
-      ...paginationArgs({ page, pageSize }),
-      orderBy: { createdAt: 'desc' },
-      include: {
-        category: true,
-        supplier: true,
-        stockLevels: warehouseId ? { where: { warehouseId } } : false,
-      },
-    }),
-    prisma.product.count({ where }),
-  ]);
+  return cacheGetOrSet(cacheKey, async () => {
+    const where: Prisma.ProductWhereInput = {
+      organizationId,
+      ...(categoryId ? { categoryId } : {}),
+      ...(warehouseId ? { stockLevels: { some: { warehouseId } } } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: 'insensitive' } },
+              { sku: { contains: search, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    };
 
-  return { data, pagination: paginationMeta({ page, pageSize }, total) };
+    const [data, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        ...paginationArgs({ page, pageSize }),
+        orderBy: { createdAt: 'desc' },
+        include: {
+          category: true,
+          supplier: true,
+          stockLevels: warehouseId ? { where: { warehouseId } } : false,
+        },
+      }),
+      prisma.product.count({ where }),
+    ]);
+
+    return { data, pagination: paginationMeta({ page, pageSize }, total) };
+  });
 }
 
 async function assertCatalogRefsBelongToOrg(
@@ -65,7 +73,7 @@ async function assertCatalogRefsBelongToOrg(
 
 export async function createProduct(input: CreateProductInput, organizationId: string) {
   await assertCatalogRefsBelongToOrg(organizationId, input.categoryId, input.supplierId);
-  return prisma.product.create({
+  const product = await prisma.product.create({
     data: {
       organizationId,
       sku: input.sku,
@@ -75,6 +83,8 @@ export async function createProduct(input: CreateProductInput, organizationId: s
       unitPrice: input.unitPrice,
     },
   });
+  await cacheInvalidate(cacheKeys.productListPattern(organizationId));
+  return product;
 }
 
 export async function getProduct(id: string, organizationId: string) {
@@ -90,7 +100,9 @@ export async function getProduct(id: string, organizationId: string) {
 export async function updateProduct(id: string, organizationId: string, input: UpdateProductInput) {
   await getProduct(id, organizationId);
   await assertCatalogRefsBelongToOrg(organizationId, input.categoryId, input.supplierId);
-  return prisma.product.update({ where: { id }, data: input });
+  const product = await prisma.product.update({ where: { id }, data: input });
+  await cacheInvalidate(cacheKeys.productListPattern(organizationId));
+  return product;
 }
 
 export async function deleteProduct(id: string, organizationId: string) {
@@ -99,4 +111,5 @@ export async function deleteProduct(id: string, organizationId: string) {
   // the product has any StockMovement or order-line history - same pattern
   // as warehouse deletion.
   await prisma.product.delete({ where: { id } });
+  await cacheInvalidate(cacheKeys.productListPattern(organizationId));
 }

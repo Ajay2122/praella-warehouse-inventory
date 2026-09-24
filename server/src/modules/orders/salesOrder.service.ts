@@ -5,6 +5,7 @@ import { assertOrgScope } from '../../lib/orgScope';
 import { applyMovement } from '../../lib/inventory';
 import { resolveWarehouseAccess } from '../../lib/warehouseAccess';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
+import { invalidateInventoryCaches } from '../../lib/cache';
 import type { AuthenticatedUser } from '../../types/express';
 import type { CreateSalesOrderInput } from './salesOrder.schemas';
 
@@ -97,7 +98,7 @@ export async function dispatchSalesOrder(id: string, actor: AuthenticatedUser) {
     throw new AppError('BUSINESS_RULE_VIOLATION', `Cannot dispatch a sales order in status ${so.status}`);
   }
 
-  return prisma.$transaction(async (tx) => {
+  const updated = await prisma.$transaction(async (tx) => {
     for (const line of so.lines) {
       await applyMovement(tx, {
         productId: line.productId,
@@ -115,6 +116,8 @@ export async function dispatchSalesOrder(id: string, actor: AuthenticatedUser) {
       include: { lines: true },
     });
   });
+  await invalidateInventoryCaches(actor.organizationId);
+  return updated;
 }
 
 export async function cancelSalesOrder(id: string, actor: AuthenticatedUser) {
