@@ -31,6 +31,43 @@ services:
       timeout: 5s
       retries: 10
 
+  # api and web are optional - most local development runs them with
+  # `npm run dev` (hot reload) against just the postgres/redis containers
+  # above. `docker compose up -d` still starts everything, api/web
+  # included, for a one-command "clone and run" path with no Node install
+  # needed on the host at all.
+  api:
+    build:
+      context: ./server
+    container_name: praella-wms-api
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: "postgresql://postgres:postgres@postgres:5432/warehouse_inventory?schema=public"
+      JWT_ACCESS_SECRET: "change-me-to-a-random-32-plus-character-secret"
+      JWT_ACCESS_EXPIRES_IN: 15m
+      REFRESH_TOKEN_TTL_DAYS: 7
+      REDIS_URL: "redis://redis:6379"
+      CORS_ORIGIN: "http://localhost:8080"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./client
+    container_name: praella-wms-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+
 volumes:
   postgres_data:
   redis_data:

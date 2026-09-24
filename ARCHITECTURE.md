@@ -362,5 +362,15 @@ items" in the README per the PDF's deliverable format.
   `docker-compose.yml` unchanged and still the documented path for anyone
   whose Docker works. See README's "Troubleshooting: Docker Desktop won't
   start" section.
-- Phase 3 (next): JWT auth (signup/login/refresh/logout/me), password
-  hashing (`lib/password.ts` already exists from Phase 2's seed script).
+- **Phases 3-17: all done.** Auth, two-layer RBAC, warehouses, catalog
+  (category/supplier/product), the shared inventory transaction engine
+  (`lib/inventory.ts`), stock movements, transfers, replenishment rules +
+  alerts, purchase/sales orders (both driving the same engine), pagination/
+  search/filtering (built into every list endpoint from the start), Redis
+  caching (fails open), BullMQ background jobs (bulk stock update,
+  scheduled replenishment scan), rate limiting, audit logs, request
+  logging, 32 Jest/Supertest integration tests (including a live
+  concurrency test), Swagger UI at `/api/docs`, and the React/TS/Tailwind
+  frontend. See README's "Project summary" for challenges, what's
+  pending, and two real bugs a live browser smoke test caught that the
+  automated tests hadn't (both fixed).

@@ -4,58 +4,86 @@ Practical test submission — Senior Backend Developer (Tier 3), Praella.
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design (domain model,
 ER diagram, RBAC matrix, API surface, phase plan).
 
-> Status: Phase 2 (database schema, migrations, seed data) complete. This
-> README is filled in progressively as each phase lands; the sections the
-> PDF requires (summary, challenges, time spent, pending items) are
-> completed at the end.
-
 ## Tech stack
 
-| Layer          | Choice                                   |
-|----------------|-------------------------------------------|
-| Runtime        | Node.js 20+, TypeScript                   |
-| API            | Express.js                                |
-| Database       | PostgreSQL 16, Prisma ORM                 |
-| Auth           | JWT (access + rotating refresh), bcrypt   |
-| Validation     | Zod                                       |
-| Cache          | Redis 7                                   |
-| Queue          | BullMQ (Redis-backed)                     |
-| Testing        | Jest, Supertest                           |
-| API docs       | Swagger / OpenAPI                         |
-| Frontend       | React, TypeScript, Tailwind CSS           |
-| Infra          | Docker, Docker Compose                    |
+| Layer          | Choice                                              |
+|----------------|-------------------------------------------------------|
+| Runtime        | Node.js 20+, TypeScript                                |
+| API            | Express.js                                             |
+| Database       | PostgreSQL 16, Prisma ORM                              |
+| Auth           | JWT access tokens + DB-backed rotating refresh, bcrypt |
+| Validation     | Zod                                                    |
+| Cache          | Redis 7 (cache-aside, fails open if unavailable)       |
+| Queue          | BullMQ (Redis-backed)                                  |
+| Testing        | Jest, Supertest (32 integration tests)                 |
+| API docs       | Swagger UI / OpenAPI 3 (`/api/docs`)                   |
+| Frontend       | React 18, TypeScript, Tailwind CSS, React Query        |
+| Infra          | Docker, Docker Compose                                 |
 
 ## Project setup
 
-### 1. Start infrastructure
+### Option A — one command (Docker)
 
 ```bash
 docker compose up -d
 ```
 
-Starts Postgres (`localhost:5432`, db `warehouse_inventory`, user/pass
-`postgres`/`postgres`) and Redis (`localhost:6379`).
+Builds and starts everything: Postgres (`5432`), Redis (`6379`), the API
+(`4000`, running migrations on startup), and the web client served by
+nginx (`8080`). Seed the database once the containers are healthy:
 
-### 2. Configure environment
+```bash
+docker compose exec api npm run seed
+```
+
+Then open `http://localhost:8080`.
+
+### Option B — local dev (hot reload)
+
+Start just the infra containers, run the app processes on the host.
+
+```bash
+docker compose up -d postgres redis
+```
+
+**Backend:**
 
 ```bash
 cd server
-cp .env.example .env
-```
-
-Defaults in `.env.example` match the docker-compose services, so no edits
-are required for local development.
-
-### 3. Install, migrate, seed, run
-
-```bash
+cp .env.example .env      # defaults already match the containers above
 npm install
 npx prisma migrate dev
 npm run seed
-npm run dev
+npm run dev                # http://localhost:4000
 ```
 
-The API listens on `http://localhost:4000`.
+**Frontend** (separate terminal):
+
+```bash
+cd client
+npm install
+npm run dev                 # http://localhost:5173, proxies /api to :4000
+```
+
+### Verify
+
+```bash
+curl http://localhost:4000/health
+curl http://localhost:4000/health/ready   # confirms DB connectivity too
+```
+
+Swagger UI: `http://localhost:4000/api/docs`.
+
+### Running tests
+
+```bash
+cd server
+npm test
+```
+
+Uses a separate database (`warehouse_inventory_test`, configured in
+`server/.env.test`) so it never touches your dev data. `jest.config.js`'s
+`globalSetup` pushes the schema onto it automatically before the run.
 
 ### Troubleshooting: Docker Desktop won't start (Windows)
 
@@ -67,26 +95,12 @@ internal distros. From an elevated PowerShell:
 wsl --install --no-distribution
 ```
 
-then restart Docker Desktop. As a fallback, any local PostgreSQL 16+ works
-just as well — create a database and a role for it, then point
-`DATABASE_URL` in `server/.env` at that instance instead of the
-docker-compose one; everything past that step (`migrate dev`, `seed`,
-`dev`) is identical. Redis (Phase 11+) can similarly be swapped for any
-local Redis instance via `REDIS_URL`.
-
-### 4. Verify
-
-```bash
-curl http://localhost:4000/health
-curl http://localhost:4000/health/ready
-```
-
-`/health` confirms the process is up; `/health/ready` additionally confirms
-the database is reachable.
-
-## Project summary
-
-_(filled in as the project nears completion, per the deliverable spec: approach, what I liked/disliked, challenges, time spent, pending items)_
+then restart Docker Desktop. As a fallback, any local PostgreSQL 16+ /
+Redis 7+ work just as well — point `DATABASE_URL` / `REDIS_URL` in
+`server/.env` at those instances instead of the docker-compose ones;
+everything past that (`migrate dev`, `seed`, `dev`) is identical. This is
+exactly how this project itself was developed and tested — see "Challenges"
+below.
 
 ## Sample / seed data
 
@@ -106,5 +120,97 @@ _(filled in as the project nears completion, per the deliverable spec: approach,
   INBOUND `StockMovement` row (nothing sets `StockLevel` without a
   corresponding ledger entry, even in the seed)
 - AirPods Pro at Surat DC seeded at 10 units with a replenishment rule of
-  20, so the low-stock alert endpoint (built in Phase 7) has something to
-  return immediately with no manual setup
+  20, so the low-stock alert endpoint has something to return immediately
+  with no manual setup
+
+## Project summary
+
+### Approach
+
+Built in dependency order rather than page-by-page: schema and ER design
+first (everything else references it), then auth/RBAC (every other route
+needs it), then the inventory transaction engine (`server/src/lib/inventory.ts`)
+as a single shared primitive — one atomic-conditional-update function that
+every stock-changing path (manual movements, transfers, PO receive, SO
+dispatch) calls inside its own `$transaction`, so "never go negative" and
+"all-or-nothing on multi-line operations" only had to be gotten right once.
+RBAC is two layers throughout: an org-wide role matrix plus a per-warehouse
+membership/role override, and `organizationId` is never trusted from a
+request body — only ever derived from the authenticated JWT. The frontend
+came last and deliberately stays thin: it's a real, working admin UI
+exercising every endpoint, not the graded centerpiece.
+
+### What I liked
+
+The atomic-conditional-decrement pattern for concurrency
+(`UPDATE ... WHERE quantity >= amount`, checking `count === 0`) — it's a
+small piece of code but it's the actual mechanism that makes "never
+oversell" true under real concurrent load, and it was satisfying to
+verify with a live test firing two simultaneous requests at the same
+stock row. Idempotency-Key handling was also a good design exercise: the
+first implementation cached error responses too, which meant a client
+that fixed a bad request could never retry with the same key — the test
+suite caught this before it shipped.
+
+### What I disliked / would reconsider
+
+Hand-maintaining the OpenAPI spec separately from the Zod schemas
+(`server/src/docs/openapi.ts`) is real duplication — a `zod-to-openapi`
+pipeline would be the right fix given more time, and is the one place in
+this codebase where documentation can drift from validation without
+anything catching it. The bulk-update job's per-item RBAC is also
+looser than I'd want: enqueueing is gated to Admin/Manager, but the worker
+itself doesn't re-check per-warehouse access on each line.
+
+### Challenges
+
+The development machine's Docker Desktop never came up — its WSL2 backend
+failed to provision its internal distros, and that was a genuine
+environment problem, not a project one. Rather than block on it, the
+project fell back to a native local PostgreSQL/Redis for development, and
+the Docker Compose path was validated separately (`docker compose config`)
+and via a full read-through of both Dockerfiles, but has not been run
+end-to-end on this machine. It should work as written on a machine where
+Docker actually starts; that's the one piece of the stack that's
+reviewed-but-unproven rather than reviewed-and-tested here.
+
+A live browser smoke test of the frontend also caught two real backend
+bugs that unit/integration tests hadn't: the Redis cache client's
+`enableOfflineQueue` default meant every cached endpoint hung for the full
+retry window instead of failing open when Redis was unreachable, and the
+BullMQ queue connection had the same latent issue for the bulk-update
+endpoint. Both are fixed (`server/src/lib/redis.ts`, `server/src/jobs/queue.ts`)
+and are a good example of why "type-checks and unit tests pass" isn't the
+same as "actually works" for anything touching a real network dependency.
+
+### Estimated time spent
+
+This project was built in an extended pair-programming session with
+Claude (Anthropic's Claude Code), working through the phases end-to-end
+in one continuous sitting rather than across separate days — architecture
+and schema design, all backend modules, the test suite, API docs, and the
+frontend were each built, then verified live (via curl, the automated
+tests, and a real browser session) before moving to the next phase. I
+haven't converted that into an "hours" figure here since it doesn't map
+cleanly onto solo-developer time; happy to walk through the actual
+build/commit history (`git log`) if useful context for evaluation.
+
+### Pending items / known gaps
+
+- **Docker Compose path unverified end-to-end** — see Challenges above.
+- **OpenAPI spec is hand-maintained**, not generated from the Zod schemas
+  — noted as the one place docs and validation could drift apart.
+- **Bulk stock update worker doesn't re-check per-item warehouse RBAC** —
+  only checked once at enqueue time.
+- **No hosted deployment** — this submission targets local
+  `docker compose up -d` / local dev per the setup instructions above,
+  not a live URL.
+- **Trimmed from the original design** (see ARCHITECTURE.md section 10):
+  a separate `Role`/`Permission` table (the role-string + per-warehouse
+  override model already satisfies the RBAC requirement without it) and
+  GraphQL (REST only, per the brief's "REST or GraphQL" either/or).
+- Everything else in ARCHITECTURE.md's phase list (auth, RBAC, warehouses,
+  catalog, inventory engine, transfers, replenishment, purchase/sales
+  orders, pagination/filtering/search, Redis caching, BullMQ background
+  jobs, rate limiting, audit logs, automated tests, Swagger docs, and the
+  React frontend) is implemented and verified working.
