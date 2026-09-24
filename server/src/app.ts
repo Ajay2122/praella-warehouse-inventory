@@ -4,6 +4,8 @@ import helmet from 'helmet';
 import { prisma } from './lib/prisma';
 import { env } from './config/env';
 import { errorHandler } from './middleware/errorHandler';
+import { apiRateLimiter, authRateLimiter } from './middleware/rateLimit';
+import { requestLogger } from './middleware/requestLogger';
 import { authRouter } from './modules/auth/auth.routes';
 import { warehouseRouter } from './modules/warehouses/warehouse.routes';
 import { categoryRouter } from './modules/products/category.routes';
@@ -18,6 +20,8 @@ export const app = express();
 app.use(helmet());
 app.use(cors({ origin: env.CORS_ORIGIN }));
 app.use(express.json({ limit: '1mb' }));
+app.use(requestLogger);
+app.use('/api', apiRateLimiter);
 
 // Liveness: process is up. No dependency checks.
 app.get('/health', (_req: Request, res: Response) => {
@@ -34,7 +38,7 @@ app.get('/health/ready', async (_req: Request, res: Response) => {
   }
 });
 
-app.use('/api/auth', authRouter);
+app.use('/api/auth', authRateLimiter, authRouter);
 app.use('/api/warehouses', warehouseRouter);
 app.use('/api/categories', categoryRouter);
 app.use('/api/suppliers', supplierRouter);

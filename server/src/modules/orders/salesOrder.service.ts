@@ -6,6 +6,7 @@ import { applyMovement } from '../../lib/inventory';
 import { resolveWarehouseAccess } from '../../lib/warehouseAccess';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
 import { invalidateInventoryCaches } from '../../lib/cache';
+import { writeAuditLog } from '../../lib/audit';
 import type { AuthenticatedUser } from '../../types/express';
 import type { CreateSalesOrderInput } from './salesOrder.schemas';
 
@@ -117,6 +118,14 @@ export async function dispatchSalesOrder(id: string, actor: AuthenticatedUser) {
     });
   });
   await invalidateInventoryCaches(actor.organizationId);
+  writeAuditLog({
+    organizationId: actor.organizationId,
+    userId: actor.id,
+    action: 'SALES_ORDER_DISPATCHED',
+    entity: 'SalesOrder',
+    entityId: id,
+    newValue: updated,
+  });
   return updated;
 }
 

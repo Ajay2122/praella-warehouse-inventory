@@ -33,12 +33,13 @@ export async function updateHandler(req: Request, res: Response) {
     req.params.id as string,
     req.user!.organizationId,
     req.body,
+    req.user!.id,
   );
   res.json({ success: true, data: warehouse });
 }
 
 export async function deleteHandler(req: Request, res: Response) {
-  await warehouseService.deleteWarehouse(req.params.id as string, req.user!.organizationId);
+  await warehouseService.deleteWarehouse(req.params.id as string, req.user!.organizationId, req.user!.id);
   res.status(204).send();
 }
 

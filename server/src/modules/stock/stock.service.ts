@@ -6,7 +6,8 @@ import { assertOrgScope } from '../../lib/orgScope';
 import { applyMovement } from '../../lib/inventory';
 import { effectiveWarehouseRole, resolveWarehouseAccess } from '../../lib/warehouseAccess';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
-import { cacheGetOrSet, cacheKeys, hashQuery, invalidateInventoryCaches } from "../../lib/cache";
+import { cacheGetOrSet, cacheKeys, hashQuery, invalidateInventoryCaches } from '../../lib/cache';
+import { writeAuditLog } from '../../lib/audit';
 import type { AuthenticatedUser } from '../../types/express';
 import type { RecordMovementInput, TransferInput, UpsertReplenishmentRuleInput } from './stock.schemas';
 
@@ -143,6 +144,16 @@ export async function recordMovement(input: RecordMovementInput, actor: Authenti
     }),
   );
   await invalidateInventoryCaches(actor.organizationId);
+  if (input.type === 'ADJUSTMENT') {
+    writeAuditLog({
+      organizationId: actor.organizationId,
+      userId: actor.id,
+      action: 'STOCK_ADJUSTED',
+      entity: 'StockMovement',
+      entityId: movement.id,
+      newValue: movement,
+    });
+  }
   return movement;
 }
 
@@ -190,6 +201,14 @@ export async function transferStock(input: TransferInput, actor: AuthenticatedUs
     return { referenceId, out, in: inbound };
   });
   await invalidateInventoryCaches(actor.organizationId);
+  writeAuditLog({
+    organizationId: actor.organizationId,
+    userId: actor.id,
+    action: 'STOCK_TRANSFERRED',
+    entity: 'StockMovement',
+    entityId: referenceId,
+    newValue: result,
+  });
   return result;
 }
 

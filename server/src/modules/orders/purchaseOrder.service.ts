@@ -6,6 +6,7 @@ import { applyMovement } from '../../lib/inventory';
 import { effectiveWarehouseRole, resolveWarehouseAccess } from '../../lib/warehouseAccess';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
 import { invalidateInventoryCaches } from '../../lib/cache';
+import { writeAuditLog } from '../../lib/audit';
 import type { AuthenticatedUser } from '../../types/express';
 import type { CreatePurchaseOrderInput } from './purchaseOrder.schemas';
 
@@ -126,6 +127,14 @@ export async function receivePurchaseOrder(id: string, actor: AuthenticatedUser)
     });
   });
   await invalidateInventoryCaches(actor.organizationId);
+  writeAuditLog({
+    organizationId: actor.organizationId,
+    userId: actor.id,
+    action: 'PURCHASE_ORDER_RECEIVED',
+    entity: 'PurchaseOrder',
+    entityId: id,
+    newValue: updated,
+  });
   return updated;
 }
 

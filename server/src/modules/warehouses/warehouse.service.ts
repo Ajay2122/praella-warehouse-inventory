@@ -3,6 +3,7 @@ import { prisma } from '../../lib/prisma';
 import { AppError } from '../../lib/errors';
 import { assertOrgScope } from '../../lib/orgScope';
 import { paginationArgs, paginationMeta, type PaginationInput } from '../../lib/pagination';
+import { writeAuditLog } from '../../lib/audit';
 import type { AddMemberInput, CreateWarehouseInput, UpdateWarehouseInput } from './warehouse.schemas';
 
 interface ListParams extends PaginationInput {
@@ -50,6 +51,16 @@ export async function createWarehouse(
       data: { warehouseId: warehouse.id, userId: actor.id, role: 'ADMIN' },
     });
     return warehouse;
+  }).then((warehouse) => {
+    writeAuditLog({
+      organizationId: actor.organizationId,
+      userId: actor.id,
+      action: 'WAREHOUSE_CREATED',
+      entity: 'Warehouse',
+      entityId: warehouse.id,
+      newValue: warehouse,
+    });
+    return warehouse;
   });
 }
 
@@ -60,18 +71,41 @@ export async function getWarehouse(id: string, organizationId: string) {
   return warehouse;
 }
 
-export async function updateWarehouse(id: string, organizationId: string, input: UpdateWarehouseInput) {
-  await getWarehouse(id, organizationId);
-  return prisma.warehouse.update({ where: { id }, data: input });
+export async function updateWarehouse(
+  id: string,
+  organizationId: string,
+  input: UpdateWarehouseInput,
+  actorUserId: string,
+) {
+  const before = await getWarehouse(id, organizationId);
+  const warehouse = await prisma.warehouse.update({ where: { id }, data: input });
+  writeAuditLog({
+    organizationId,
+    userId: actorUserId,
+    action: 'WAREHOUSE_UPDATED',
+    entity: 'Warehouse',
+    entityId: id,
+    oldValue: before,
+    newValue: warehouse,
+  });
+  return warehouse;
 }
 
-export async function deleteWarehouse(id: string, organizationId: string) {
-  await getWarehouse(id, organizationId);
+export async function deleteWarehouse(id: string, organizationId: string, actorUserId: string) {
+  const warehouse = await getWarehouse(id, organizationId);
   // No cascade override for StockMovement/PurchaseOrder/SalesOrder
   // references - Postgres rejects the delete (FK violation -> 409) once a
   // warehouse has any stock/order history. Only an unused warehouse can
   // actually be deleted; that's deliberate, not a bug.
   await prisma.warehouse.delete({ where: { id } });
+  writeAuditLog({
+    organizationId,
+    userId: actorUserId,
+    action: 'WAREHOUSE_DELETED',
+    entity: 'Warehouse',
+    entityId: id,
+    oldValue: warehouse,
+  });
 }
 
 export async function addMember(warehouseId: string, organizationId: string, input: AddMemberInput) {
