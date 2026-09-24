@@ -316,6 +316,13 @@ export const openApiDocument = {
     '/auth/me': {
       get: { tags: ['Auth'], summary: 'Current authenticated user', responses: { '200': okResponse('#/components/schemas/AuthTokens'), '401': errorResponse('Not authenticated') } },
     },
+    '/users': {
+      get: {
+        tags: ['Users'],
+        summary: 'List users in the caller org (Admin only)',
+        responses: { '200': { description: 'OK' }, '403': errorResponse('Not an Admin') },
+      },
+    },
     '/warehouses': {
       get: {
         tags: ['Warehouses'],

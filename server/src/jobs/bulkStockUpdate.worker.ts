@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import { bullConnection, QUEUE_NAMES } from './queue';
+import { workerConnection, QUEUE_NAMES } from './queue';
 import { prisma } from '../lib/prisma';
 import { applyMovement } from '../lib/inventory';
 import { invalidateInventoryCaches } from '../lib/cache';
@@ -47,7 +47,7 @@ export const bulkStockUpdateWorker = new Worker<BulkStockUpdateJobData, BulkStoc
       failed: results.filter((r) => !r.ok).length,
     };
   },
-  { connection: bullConnection, autorun: false },
+  { connection: workerConnection, autorun: false },
 );
 
 bulkStockUpdateWorker.on('error', (err) => {

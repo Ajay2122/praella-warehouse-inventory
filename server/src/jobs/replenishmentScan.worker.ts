@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { bullConnection, QUEUE_NAMES, replenishmentScanQueue } from './queue';
+import { workerConnection, QUEUE_NAMES, replenishmentScanQueue } from './queue';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { computeLowStockAlerts, replenishmentAlertsCacheKey } from '../modules/stock/stock.service';
@@ -32,7 +32,7 @@ export const replenishmentScanWorker = new Worker(
 
     return { organizationsScanned: organizations.length, totalAlerts };
   },
-  { connection: bullConnection, autorun: false },
+  { connection: workerConnection, autorun: false },
 );
 
 replenishmentScanWorker.on('error', (err) => {

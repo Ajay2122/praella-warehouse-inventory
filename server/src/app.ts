@@ -10,6 +10,7 @@ import { apiRateLimiter, authRateLimiter } from './middleware/rateLimit';
 import { requestLogger } from './middleware/requestLogger';
 import { authRouter } from './modules/auth/auth.routes';
 import { warehouseRouter } from './modules/warehouses/warehouse.routes';
+import { userRouter } from './modules/users/user.routes';
 import { categoryRouter } from './modules/products/category.routes';
 import { supplierRouter } from './modules/products/supplier.routes';
 import { productRouter } from './modules/products/product.routes';
@@ -49,6 +50,7 @@ app.get('/api/docs.json', (_req: Request, res: Response) => res.json(openApiDocu
 
 app.use('/api/auth', authRateLimiter, authRouter);
 app.use('/api/warehouses', warehouseRouter);
+app.use('/api/users', userRouter);
 app.use('/api/categories', categoryRouter);
 app.use('/api/suppliers', supplierRouter);
 app.use('/api/products', productRouter);

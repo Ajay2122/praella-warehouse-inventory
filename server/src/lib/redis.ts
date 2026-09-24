@@ -3,8 +3,15 @@ import { env } from '../config/env';
 
 export const redis = new Redis(env.REDIS_URL, {
   maxRetriesPerRequest: 1,
-  retryStrategy: (times) => Math.min(times * 500, 3000),
+  retryStrategy: (times) => (times > 3 ? null : Math.min(times * 500, 2000)),
   lazyConnect: true,
+  // The critical setting for "fail open": ioredis's default (true) queues
+  // commands in memory while disconnected and only rejects once the retry
+  // budget above is exhausted - which made every cacheGetOrSet() call hang
+  // for the full retry window instead of falling through to the DB
+  // immediately, in exactly the no-Redis environment this fallback exists
+  // for. false makes a command reject the instant it can't be sent.
+  enableOfflineQueue: false,
 });
 
 let loggedConnectionIssue = false;
