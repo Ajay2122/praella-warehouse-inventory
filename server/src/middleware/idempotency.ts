@@ -43,6 +43,14 @@ export function idempotent() {
       // key forever. Only a completed 2xx actually did the side effect
       // that duplication would double-apply.
       if (res.statusCode >= 200 && res.statusCode < 300) {
+        // Round-trip through JSON before storing: `body` still has live
+        // values (e.g. Prisma Decimal instances) whose custom .toJSON()
+        // only fires under JSON.stringify. Storing the raw object let
+        // Prisma's own JSON-column encoder serialize a Decimal as a number
+        // instead, so a replayed response silently differed from the
+        // original (a bug this project's own test suite caught: "5" over
+        // the wire the first time, 5 on replay).
+        const serializable = JSON.parse(JSON.stringify(body)) as Prisma.InputJsonValue;
         prisma.idempotencyKey
           .create({
             data: {
@@ -50,7 +58,7 @@ export function idempotent() {
               key,
               requestHash,
               responseStatus: res.statusCode,
-              responseBody: body as Prisma.InputJsonValue,
+              responseBody: serializable,
             },
           })
           .catch((err) => console.error('[idempotency] failed to persist response', err));

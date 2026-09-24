@@ -1,7 +1,9 @@
 import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import swaggerUi from 'swagger-ui-express';
 import { prisma } from './lib/prisma';
+import { openApiDocument } from './docs/openapi';
 import { env } from './config/env';
 import { errorHandler } from './middleware/errorHandler';
 import { apiRateLimiter, authRateLimiter } from './middleware/rateLimit';
@@ -17,7 +19,11 @@ import { salesOrderRouter } from './modules/orders/salesOrder.routes';
 
 export const app = express();
 
-app.use(helmet());
+// contentSecurityPolicy is disabled: this is a JSON API where CSP has
+// nothing to protect, except /api/docs (Swagger UI), which needs inline
+// scripts/styles that helmet's default CSP blocks. Every other helmet
+// protection (HSTS, X-Frame-Options, etc.) stays on.
+app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: env.CORS_ORIGIN }));
 app.use(express.json({ limit: '1mb' }));
 app.use(requestLogger);
@@ -37,6 +43,9 @@ app.get('/health/ready', async (_req: Request, res: Response) => {
     res.status(503).json({ status: 'not_ready', error: (err as Error).message });
   }
 });
+
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
+app.get('/api/docs.json', (_req: Request, res: Response) => res.json(openApiDocument));
 
 app.use('/api/auth', authRateLimiter, authRouter);
 app.use('/api/warehouses', warehouseRouter);
