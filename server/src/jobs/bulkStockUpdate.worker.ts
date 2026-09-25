@@ -1,5 +1,5 @@
 import { Worker, type Job } from 'bullmq';
-import { workerConnection, QUEUE_NAMES } from './queue';
+import { workerConnection, QUEUE_NAMES, warnOnce } from './queue';
 import { prisma } from '../lib/prisma';
 import { applyMovement } from '../lib/inventory';
 import { invalidateInventoryCaches } from '../lib/cache';
@@ -51,5 +51,5 @@ export const bulkStockUpdateWorker = new Worker<BulkStockUpdateJobData, BulkStoc
 );
 
 bulkStockUpdateWorker.on('error', (err) => {
-  console.warn('[jobs] bulkStockUpdate worker error (Redis likely unavailable):', err.message);
+  warnOnce('bulkStockUpdate', `[jobs] bulkStockUpdate worker error (Redis likely unavailable): ${err.message}`);
 });

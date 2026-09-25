@@ -32,6 +32,20 @@ for (const conn of [queueConnection, workerConnection]) {
   });
 }
 
+// BullMQ's internal machinery (job polling, stalled-job checks) keeps
+// trying to use a connection even after ioredis has given up reconnecting
+// and closed it - each attempt fires a fresh 'error' event, forever. Without
+// this guard, a Redis-less dev environment logs the same warning in an
+// infinite loop instead of once. One flag per distinct warning message, not
+// global, so bulkStockUpdate and replenishmentScan each still get their own
+// single line.
+const loggedOnce = new Set<string>();
+export function warnOnce(key: string, message: string): void {
+  if (loggedOnce.has(key)) return;
+  loggedOnce.add(key);
+  console.warn(message);
+}
+
 export const QUEUE_NAMES = {
   bulkStockUpdate: 'stock.bulkUpdate',
   replenishmentScan: 'replenishment.scan',

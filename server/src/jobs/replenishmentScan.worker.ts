@@ -1,5 +1,5 @@
 import { Worker } from 'bullmq';
-import { workerConnection, QUEUE_NAMES, replenishmentScanQueue } from './queue';
+import { workerConnection, QUEUE_NAMES, replenishmentScanQueue, warnOnce } from './queue';
 import { prisma } from '../lib/prisma';
 import { redis } from '../lib/redis';
 import { computeLowStockAlerts, replenishmentAlertsCacheKey } from '../modules/stock/stock.service';
@@ -36,7 +36,7 @@ export const replenishmentScanWorker = new Worker(
 );
 
 replenishmentScanWorker.on('error', (err) => {
-  console.warn('[jobs] replenishmentScan worker error (Redis likely unavailable):', err.message);
+  warnOnce('replenishmentScan', `[jobs] replenishmentScan worker error (Redis likely unavailable): ${err.message}`);
 });
 
 export async function scheduleReplenishmentScan(): Promise<void> {
@@ -50,9 +50,9 @@ export async function scheduleReplenishmentScan(): Promise<void> {
       { name: 'scan' },
     );
   } catch (err) {
-    console.warn(
-      '[jobs] failed to schedule replenishment scan (Redis likely unavailable):',
-      (err as Error).message,
+    warnOnce(
+      'scheduleReplenishmentScan',
+      `[jobs] failed to schedule replenishment scan (Redis likely unavailable): ${(err as Error).message}`,
     );
   }
 }
