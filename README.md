@@ -99,8 +99,8 @@ then restart Docker Desktop. As a fallback, any local PostgreSQL 16+ /
 Redis 7+ work just as well — point `DATABASE_URL` / `REDIS_URL` in
 `server/.env` at those instances instead of the docker-compose ones;
 everything past that (`migrate dev`, `seed`, `dev`) is identical. This is
-exactly how this project itself was developed and tested — see "Challenges"
-below.
+exactly what happened during this project's own development — see
+"Challenges" below for what that turned up once Docker was working again.
 
 ## Sample / seed data
 
@@ -164,24 +164,46 @@ itself doesn't re-check per-warehouse access on each line.
 
 ### Challenges
 
-The development machine's Docker Desktop never came up — its WSL2 backend
-failed to provision its internal distros, and that was a genuine
-environment problem, not a project one. Rather than block on it, the
-project fell back to a native local PostgreSQL/Redis for development, and
-the Docker Compose path was validated separately (`docker compose config`)
-and via a full read-through of both Dockerfiles, but has not been run
-end-to-end on this machine. It should work as written on a machine where
-Docker actually starts; that's the one piece of the stack that's
-reviewed-but-unproven rather than reviewed-and-tested here.
+The development machine's Docker Desktop initially didn't come up — its
+WSL2 backend hadn't provisioned its internal distros. Development
+continued against a native local PostgreSQL/Redis in the meantime (the
+Docker Compose path was validated separately via `docker compose config`
+and a full read-through of both Dockerfiles), and once Docker Desktop was
+working, `docker compose up -d --build` was run for real and every
+service verified end-to-end: all four containers healthy, migrations
+applied automatically on API startup, `docker compose exec api npm run
+seed` populating the database, login and every page of the web client
+working through nginx's proxy to the API container.
 
-A live browser smoke test of the frontend also caught two real backend
-bugs that unit/integration tests hadn't: the Redis cache client's
-`enableOfflineQueue` default meant every cached endpoint hung for the full
-retry window instead of failing open when Redis was unreachable, and the
-BullMQ queue connection had the same latent issue for the bulk-update
-endpoint. Both are fixed (`server/src/lib/redis.ts`, `server/src/jobs/queue.ts`)
-and are a good example of why "type-checks and unit tests pass" isn't the
-same as "actually works" for anything touching a real network dependency.
+That real run caught three bugs the "reviewed but unproven" version had
+been hiding, all now fixed in `server/Dockerfile`:
+1. The runtime image ran `npm ci --omit=dev`, but `npx prisma migrate
+   deploy` needs the `prisma` CLI and `npm run seed` needs `tsx` - both
+   devDependencies. (It didn't fail loudly for migrations - `npx` silently
+   fell back to fetching `prisma` fresh from the registry on every
+   container start - but `npm run seed` failed outright with
+   `tsx: not found`.)
+2. Removing `--omit=dev` wasn't enough on its own: `ENV NODE_ENV=production`
+   was declared *before* `RUN npm ci`, and npm treats that env var as an
+   implicit `--omit=dev` regardless of the command's own flags. Moving the
+   `ENV` line to after the install step fixed it.
+3. `prisma/seed.ts` imports `../src/lib/password` - the TypeScript source,
+   run directly via `tsx`, not the compiled `dist/` output - but the
+   runtime stage never copied `src/` in. Added `COPY src ./src`.
+
+None of these were catchable by reading the Dockerfile or by
+`docker compose config` (which only validates YAML structure, not that
+the image actually runs) - only by actually building and running the
+image. A good reminder that "the Dockerfile looks right" and "the
+container works" are different claims.
+
+A live browser smoke test of the frontend (independently of the Docker
+work above) also caught two real backend bugs that unit/integration tests
+hadn't: the Redis cache client's `enableOfflineQueue` default meant every
+cached endpoint hung for the full retry window instead of failing open
+when Redis was unreachable, and the BullMQ queue connection had the same
+latent issue for the bulk-update endpoint. Both fixed
+(`server/src/lib/redis.ts`, `server/src/jobs/queue.ts`).
 
 ### Estimated time spent
 
@@ -197,7 +219,6 @@ build/commit history (`git log`) if useful context for evaluation.
 
 ### Pending items / known gaps
 
-- **Docker Compose path unverified end-to-end** — see Challenges above.
 - **OpenAPI spec is hand-maintained**, not generated from the Zod schemas
   — noted as the one place docs and validation could drift apart.
 - **Bulk stock update worker doesn't re-check per-item warehouse RBAC** —
