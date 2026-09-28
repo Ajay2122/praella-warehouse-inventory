@@ -4,6 +4,20 @@ Practical test submission — Senior Backend Developer (Tier 3), Praella.
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design (domain model,
 ER diagram, RBAC matrix, API surface, phase plan).
 
+## Live deployment
+
+- **App:** https://praella-warehouse-inventory.vercel.app (Vercel)
+- **API:** https://api-production-ce94.up.railway.app (Railway — Express API +
+  managed Postgres + managed Redis, all on the same project)
+- **API docs:** https://api-production-ce94.up.railway.app/api/docs
+
+Seed login: `admin@acme.test` / `Passw0rd!` (also `manager@acme.test`,
+`staff@acme.test` — same password, see "Sample / seed data" below).
+
+Not required by the practical test brief (which only asks for the GitHub
+link + local setup instructions, both still fully supported below) — this
+is in addition to, not instead of, the local/Docker path.
+
 ## Tech stack
 
 | Layer          | Choice                                              |
@@ -73,6 +87,25 @@ curl http://localhost:4000/health/ready   # confirms DB connectivity too
 ```
 
 Swagger UI: `http://localhost:4000/api/docs`.
+
+### Option C — how the hosted deployment above was actually set up
+
+- **Backend** (`server/`): deployed to Railway as a service built from
+  `server/Dockerfile` (the same one Docker Compose uses), alongside Railway's
+  managed Postgres and Redis add-ons in the same project — `DATABASE_URL`/
+  `REDIS_URL` are Railway variable references to those services, so nothing
+  is hardcoded. `npx prisma migrate deploy` runs automatically on every
+  container start (already in the Dockerfile's `CMD`); the seed script was
+  run once via `railway ssh --service api npm run seed`.
+- **Frontend** (`client/`): deployed to Vercel as a static build.
+  `VITE_API_URL` (a Vercel project environment variable, not a committed
+  file) points at the Railway API's public URL — see
+  `client/src/api/client.ts`, which uses it to build absolute request URLs
+  instead of the relative `/api` path that local dev and the Docker/nginx
+  build rely on (those still work unchanged; `VITE_API_URL` is only read
+  when set).
+- Railway's `CORS_ORIGIN` env var on the API service is set to the Vercel
+  production URL, so the browser's CORS preflight succeeds cross-origin.
 
 ### Running tests
 

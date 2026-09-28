@@ -11,3 +11,6 @@ coverage/
 !.vscode/extensions.json
 server/prisma/dev.db
 docker-compose.override.yml
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
