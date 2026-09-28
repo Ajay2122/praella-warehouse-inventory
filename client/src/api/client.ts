@@ -32,14 +32,22 @@ interface RequestOptions {
   headers?: Record<string, string>;
 }
 
+// In local dev (Vite proxy) and the Docker build (nginx proxies /api to the
+// api container), the frontend and API share an origin, so a relative path
+// is enough. Hosted separately (Vercel frontend, Railway backend - different
+// origins), VITE_API_URL must be set to the backend's full URL at build
+// time; falling back to relative would silently call the frontend's own
+// origin instead of the API.
+const API_BASE_URL = import.meta.env.VITE_API_URL ?? '';
+
 function buildUrl(path: string, query?: RequestOptions['query']): string {
-  const url = new URL(path, window.location.origin);
+  const url = new URL(path, API_BASE_URL || window.location.origin);
   if (query) {
     for (const [key, value] of Object.entries(query)) {
       if (value !== undefined && value !== '') url.searchParams.set(key, String(value));
     }
   }
-  return url.pathname + url.search;
+  return API_BASE_URL ? url.toString() : url.pathname + url.search;
 }
 
 async function rawRequest<T>(path: string, opts: RequestOptions, accessToken?: string): Promise<T> {
